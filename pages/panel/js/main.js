@@ -1,15 +1,17 @@
 /* 番剧面板 - 入口：页签 / 渲染 / 事件分发 / 启动
- * 子页签逻辑见同目录：core.js（公共）、calendar.js（每日放送）、subs.js（我的订阅 + 浮层）。
+ * 子页签逻辑见同目录：core.js（公共）、calendar.js（每日放送）、
+ * subs.js（我的订阅 + 订阅编辑浮层）、subdata.js（订阅数据 · 群订阅）。
  * 经典脚本按 index.html 里的顺序加载，顶层 const/函数全局共享。
  */
 
-const TABS = [['calendar', '每日放送'], ['subs', '我的订阅']];
+const TABS = [['calendar', '每日放送'], ['subs', '我的订阅'], ['subdata', '订阅数据']];
 
 function render() {
-  // 页签
+  // 页签（数量徽标：我的订阅 = 规则条数，订阅数据 = 群数）
   const tabs = document.getElementById('tabs');
   tabs.innerHTML = TABS.map(([id, label]) => {
-    const cnt = id === 'subs' && S.rules.length ? ` <span class="badge online" style="margin-left:4px">${S.rules.length}</span>` : '';
+    const n = id === 'subs' ? S.rules.length : (id === 'subdata' ? S.gsubs.list.length : 0);
+    const cnt = n ? ` <span class="badge online" style="margin-left:4px">${n}</span>` : '';
     return `<span class="tab ${S.tab === id ? 'active' : ''}" data-act="switchTab" data-arg="${id}">${label}${cnt}</span>`;
   }).join('');
   // 模块开关徽标 + 勾选框状态（头部是静态 DOM，只在原地同步）
@@ -22,7 +24,7 @@ function render() {
   if (sw) sw.checked = !!S.settings.enabled;
   // 内容
   const view = document.getElementById('view');
-  const map = { calendar: renderCalendar, subs: renderSubs };
+  const map = { calendar: renderCalendar, subs: renderSubs, subdata: renderSubdata };
   view.innerHTML = (map[S.tab] || renderCalendar)();
   renderModal();
 }
@@ -32,6 +34,7 @@ function switchTab(id) {
   S.tab = id;
   if (id === 'calendar' && !S.calendar.days.length && !S.calendar.loading) calLoad(false);
   if (id === 'subs') { subsLoad(); if (!S.targets.instances.length) subsTargets(); }
+  if (id === 'subdata') { subdataLoad(); if (!S.targets.instances.length) subsTargets(); }
   render();
 }
 
@@ -71,7 +74,19 @@ const ACTIONS = {
   // 批量订阅浮层
   bulkOpen, bulkClose, bulkToggleWeekday: (k) => bulkToggleWeekday(k),
   bulkWeekdaysAll, bulkSubmit,
-  // data-after（下拉/勾选框改变后）
+  // 订阅数据（群订阅）：key = "平台实例|群 ID"
+  subdataLoad, subdataPermChanged,
+  subToggle: (key) => subToggle(key),
+  subDelete: (key) => subDelete(key),
+  subEditOpen: (key) => subAddOpen(key),
+  subAddOpen: () => subAddOpen(''),
+  subAddCancel, subAddSave, subAddPickInstance, subAddPickGroup,
+  animeOpen: (key) => animeOpen(key),
+  animeClose, animeAdd, animeAddAll, animeSearch, animeClearResults,
+  animeAddItem: (key) => animeAddItem(key),
+  animeToggle: (id) => animeToggle(id),
+  animeRemove: (id, el) => animeRemove(id, el),
+  // data-after（下拉/勾选框改变后，先落状态再跑这个）
   saveModule, pickInstance, pickGroup, pickTargetType,
   bulkPickInstance, bulkPickGroup,
 };

@@ -24,7 +24,7 @@ from datetime import date, datetime
 
 from loguru import logger
 
-from . import api, render, schedule, sender, store
+from . import api, group_subs, render, schedule, sender, store
 
 TICK = 30                    # 轮询间隔（秒）：番剧推送粒度是分钟级，30 秒足够
 FIRST_DELAY = 20             # 启动后先缓一缓，别跟其它模块的启动任务挤在一起
@@ -241,10 +241,18 @@ def stop() -> None:
 def status_text() -> str:
     """给页面看的运行状态。"""
     rules = store.load_rules()
+    muted = group_subs.muted_pairs()
+    muted_rules = sum(
+        1 for r in rules
+        if str(r.get("target_type")) == "group"
+        and (str(r.get("platform_id") or ""), str(r.get("target_id") or "")) in muted
+    )
     if not rules:
         return "还没有订阅任何番剧"
     enabled = [r for r in rules if r.get("enabled")]
     head = f"共 {len(rules)} 条订阅，启用 {len(enabled)} 条"
+    if muted_rules:
+        head += f"，其中 {muted_rules} 条所属群已停用"
     if not store.load_settings().get("enabled", True):
         return f"{head} · 模块已禁用（后台推送空转）"
     ts, name = schedule.next_fire(store)

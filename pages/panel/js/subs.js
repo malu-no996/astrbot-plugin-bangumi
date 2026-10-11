@@ -241,19 +241,35 @@ function selRowChanged(id, el) {
   render();
 }
 
-function confirmOpen(title, ids, tip) {
-  S.confirm = { title, ids: ids.slice(), tip: tip || '', doing: false };
+/* 二次确认浮层。`opts` 可以带 `kind`（'rules' / 'group'）与删除目标，
+ * 见 confirmDo —— 群订阅与番剧规则的删除走的是两个接口。 */
+function confirmOpen(title, ids, tip, opts) {
+  S.confirm = Object.assign(
+    { title, ids: ids.slice(), tip: tip || '', doing: false, kind: 'rules' },
+    opts || {},
+  );
   render();
 }
 function confirmClose() { S.confirm = null; render(); }
 
 async function confirmDo() {
-  if (!S.confirm) return;
-  S.confirm.doing = true; render();
-  const j = await POST('rule/batch', { action: 'delete', ids: S.confirm.ids });
-  if (!j.ok) { notify(j.message || '删除失败', 'err'); S.confirm.doing = false; render(); return; }
+  const c = S.confirm;
+  if (!c) return;
+  c.doing = true; render();
+  const j = c.kind === 'group'
+    ? await POST('subs/delete', { platform_id: c.pid, group_id: c.gid })
+    : await POST('rule/batch', { action: 'delete', ids: c.ids });
+  if (!j.ok) { notify(j.message || '删除失败', 'err'); c.doing = false; render(); return; }
   notify(j.message || '已删除', 'ok');
-  const gone = new Set(S.confirm.ids.map(String));
+  if (c.kind === 'group') {
+    // 删群订阅会连带删掉该群的几十条番剧规则 → 两份列表都得刷新
+    S.confirm = null;
+    subdataLoad();
+    subsLoad();
+    loadState();
+    return;
+  }
+  const gone = new Set(c.ids.map(String));
   S.undo = S.undo.filter((i) => !gone.has(String(i)));
   S.confirm = null;
   S.allSel = false;
@@ -480,6 +496,10 @@ function renderModal() {
   if (S.bulk.open) h += modalBulk();
   if (S.confirm) h += modalConfirm();
   if (S.preview.show) h += modalPreview();
+  // 「订阅数据」页的两个浮层在 subdata.js —— 用 typeof 兜一下：
+  // 万一那个文件没加载成功，也只是这两个浮层不出现，不会把整个面板的渲染带崩。
+  if (S.anime && S.anime.open && typeof modalAnime === 'function') h += modalAnime();
+  if (S.subAdd && typeof modalSubAdd === 'function') h += modalSubAdd();
   box.innerHTML = h;
 }
 
@@ -622,13 +642,14 @@ function modalBulk() {
 
 function modalConfirm() {
   const c = S.confirm;
+  const label = c.kind === 'group' ? '确认删除' : `确认删除这 ${c.ids.length} 条`;
   return `<div class="modal" data-overlay-act="confirmClose">
     <div class="modal-box">
       <h3>${esc(c.title)}</h3>
       <p class="bg-cell-sub">${esc(c.tip)}</p>
       <div class="actions">
         <button data-act="confirmClose">取消</button>
-        <button class="bg-btn-danger" data-act="confirmDo" ${c.doing ? 'disabled' : ''}>${c.doing ? '删除中…' : `确认删除这 ${c.ids.length} 条`}</button>
+        <button class="bg-btn-danger" data-act="confirmDo" ${c.doing ? 'disabled' : ''}>${c.doing ? '删除中…' : label}</button>
       </div>
     </div>
   </div>`;

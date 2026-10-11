@@ -109,6 +109,8 @@ th { color: var(--muted); font-weight: normal; font-size: 12px; }
 .modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
              padding: 16px; width: 100%; max-width: 640px; }
 .modal-box h3 { margin: 0 0 12px; font-size: 16px; }
+/* 内容多的浮层（如「某群的番剧订阅」：一张表 + 加番 + 搜索）放宽一档 */
+.modal-box.modal-wide { max-width: 880px; }
 .err { color: var(--err); font-size: 13px; }
 
 /* Toast */

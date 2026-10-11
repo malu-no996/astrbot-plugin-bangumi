@@ -73,13 +73,13 @@ const S = {
   providers: [],           // 数据源下拉
   pushStatus: '',
   counts: {},
-  settings: { enabled: true, provider: 'bdata' },
+  settings: { enabled: true, provider: 'bdata', owner_only: false },
   calendar: {
     days: [], loading: false, cached: false, fetched_at: 0,
     q: '', results: [], searching: false, source: '', error: '',
     guide: false, ttl_hint: '',
   },
-  rules: [],               // 全部订阅
+  rules: [],               // 全部订阅（规则：一条 = 一部番剧 + 一个推送目标）
   targets: { instances: [], loading: false },
   form: null,              // 编辑中的订阅（新增 / 编辑共用）
   picks: { group: '' },    // 群下拉的选中值（真正写进规则的是 form.target_id）
@@ -90,9 +90,15 @@ const S = {
   },
   bulkDaysLoaded: false,
   preview: { show: false, text: '' },
-  confirm: null,           // 批量删除 / 撤销的二次确认：{title, ids, tip, doing}
+  confirm: null,           // 二次确认浮层：{title, ids, tip, kind, pid, gid, doing}
   undo: [],                // 上次批量订阅新增的 id（一键撤销）
   allSel: false,
+  /* --- 订阅数据页（群订阅） --- */
+  gsubs: { list: [], counts: {}, loading: false },   // 一行 = 一个群
+  subAdd: null,            // 手工新增 / 编辑群订阅的表单
+  anime: {                 // 某个群的番剧订阅浮层（pid/gid 为准，不用对象快照免得过期）
+    open: false, pid: '', gid: '', item: '', q: '', results: [], searching: false, busy: false,
+  },
 };
 
 /* 按「a.b.c」路径读/写状态（事件委托绑定用） */

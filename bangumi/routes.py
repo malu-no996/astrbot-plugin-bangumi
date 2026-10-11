@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 
-from . import api, push, schedule, store, targets, web
+from . import api, bulk, group_subs, push, schedule, store, targets, web
 
 _context = None
 
@@ -29,13 +29,19 @@ def bind(context) -> None:
 async def api_state():
     """模块概览：星期表 / 数据源 / 订阅数 / 推送状态 / 总开关。"""
     rules = store.load_rules()
+    subs = group_subs.load_subs()
     return web.ok(
         weekdays=[{"key": k, "label": v} for k, v in store.WEEKDAYS],
         providers=[{"key": k, "label": v} for k, v in store.PROVIDER_LABELS],
         settings=store.load_settings(),
         push_status=push.status_text(),
         push=push.status(),
-        counts={"rules": len(rules), "enabled": sum(1 for r in rules if r.get("enabled"))},
+        counts={
+            "rules": len(rules),
+            "enabled": sum(1 for r in rules if r.get("enabled")),
+            "groups": len(subs),
+            "groups_off": sum(1 for s in subs if not s.get("enabled", True)),
+        },
         calendar_fetched_at=int(store.calendar_cache().get("fetched_at") or 0),
         calendar_ttl_hours=store.CALENDAR_TTL // 3600,
         min_refresh_hours=store.MIN_REFRESH_INTERVAL // 3600,
@@ -45,17 +51,24 @@ async def api_state():
 
 
 async def api_settings():
-    """模块设置：数据源 + 总开关。"""
+    """模块设置：数据源 + 总开关 + 命令权限档位。"""
     return web.ok(settings=store.load_settings(), source=api.source_name())
 
 
 async def api_settings_save():
+    """模块设置：数据源 / 总开关 / 「订阅番剧」命令权限档位。
+
+    ★ 只写**明确传进来的**字段：缺 key 时不写，免得把没带的设置项默默改掉
+      （曾经把 `enabled` 写成「缺 key = True」的默认，页面一保存就被打开）。
+    """
     body = await web.body()
     fields: dict = {}
     if "provider" in body:
         fields["provider"] = str(body.get("provider") or "")
     if "enabled" in body:
         fields["enabled"] = bool(body.get("enabled"))
+    if "owner_only" in body:
+        fields["owner_only"] = bool(body.get("owner_only"))
     settings = store.save_settings(**fields)
     return web.ok(settings=settings, source=api.source_name(), message="设置已保存")
 
@@ -140,31 +153,15 @@ async def api_targets():
 async def api_rules_bulk():
     """把放送表里的一批番剧**一次性订到同一个群**。
 
-    ★ 为什么要有它：「一部番 = 一条订阅」这个粒度是对的，但当需求是
-      「本季新番全部往一个群里推」时，逐条点几十次「订阅」不现实。
-      批量只让人挑**一次目标**（实例 + 群），其余一律由放送表自动带出：
-      周几 / 几点 / 更新周期 / 首播日 / 封面 / 总集数。
+    ★ 实现在 `bulk.subscribe_season`（群里那条「订阅番剧」命令走的是同一个函数），
+      这里只负责把 HTTP body 翻译成它的参数 —— 两边逻辑不会漂移。
 
     ★ 去重口径：`同一条目 + 同一个目标` 已经存在才跳过（换一个群仍然会加）。
+    ★ 只读缓存、不发起拉取：批量订阅这种批量写操作不该顺带触发一轮外部请求。
     """
     body = await web.body()
-    platform_id = str(body.get("platform_id") or "").strip()
-    target_id = str(body.get("target_id") or "").strip()
-    if not platform_id:
-        return web.fail("请选择推送用的平台实例")
-    if not target_id:
-        return web.fail("请选择要推送到的群 / 填写群 ID")
     if str(body.get("target_type") or "group") == "private":
         return web.fail("批量订阅只支持群：私聊得逐个填接收人，批量没有意义")
-
-    picked: list[int] = []
-    for w in (body.get("weekdays") or []):
-        try:
-            wd = int(str(w).strip())
-        except (TypeError, ValueError):
-            continue
-        if 1 <= wd <= 7 and wd not in picked:
-            picked.append(wd)
 
     time_mode = "fixed" if str(body.get("time_mode") or "") == "fixed" else "own"
     fixed_time = str(body.get("time") or "").strip()
@@ -175,78 +172,24 @@ async def api_rules_bulk():
     except (TypeError, ValueError):
         delay = 0
 
-    # ★ 只读缓存、不发起拉取：批量订阅这种批量写操作不该顺带触发一轮外部请求。
-    days = store.calendar_cache().get("days") or []
-    if not days:
-        return web.fail("放送表还是空的：先回「每日放送」点一次「刷新放送表」")
-
-    existing = {
-        (str(r.get("subject_id") or ""), str(r.get("title") or "").strip())
-        for r in store.load_rules()
-        if str(r.get("platform_id") or "") == platform_id
-        and str(r.get("target_id") or "") == target_id
-    }
-
-    prov = api.provider()
-    raws: list[dict] = []
-    skipped = 0
-    for day in days:
-        if not isinstance(day, dict):
-            continue
-        day_wd = _wd(day.get("weekday"))
-        if picked and day_wd not in picked:
-            continue
-        for item in day.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or item.get("native") or "").strip()
-            if not title:
-                continue
-            key = (str(item.get("subject_id") or ""), title)
-            if key in existing:
-                skipped += 1
-                continue
-            item_time = str(item.get("time") or "").strip()
-            raws.append({
-                "subject_id": item.get("subject_id") or 0,
-                "provider": prov,
-                "bili_id": str(item.get("bili_id") or ""),
-                "title": title,
-                "native": str(item.get("native") or ""),
-                "image": str(item.get("image") or ""),
-                "url": str(item.get("url") or ""),
-                "air_date": str(item.get("air_date") or ""),
-                "total_episodes": int(item.get("total") or 0),
-                "weekday": _wd(item.get("weekday") or day_wd),
-                "time": fixed_time if time_mode == "fixed" else (item_time or "23:00"),
-                "interval_days": int(item.get("interval") or 7),
-                "delay_minutes": delay,
-                "platform_id": platform_id,
-                "platform_name": str(body.get("platform_name") or ""),
-                "target_type": "group",
-                "target_id": target_id,
-                "target_name": str(body.get("target_name") or target_id),
-                "template": "",
-                "enabled": True,
-            })
-            existing.add(key)          # 同一批里重复的番也别加两遍
-    if not raws:
-        return web.ok(added=0, skipped=skipped, message="没有新增：这些番剧已经订阅过这个群了")
-
-    made = store.add_rules(raws)
-    now = time.time()
-    for r in made:
-        rid = str(r.get("id"))
-        if not int(r.get("next_run_at") or 0):
-            store.set_rule_field(rid, next_run_at=schedule.compute_next(r, now))
+    res = await bulk.subscribe_season(
+        str(body.get("platform_id") or "").strip(),
+        str(body.get("target_id") or "").strip(),
+        platform_name=str(body.get("platform_name") or ""),
+        target_name=str(body.get("target_name") or ""),
+        weekdays=body.get("weekdays") or [],
+        time_mode=time_mode,
+        time=fixed_time,
+        delay_minutes=delay,
+        allow_fetch=False,
+    )
+    if not res.get("ok"):
+        return web.fail(res.get("message") or "批量订阅失败")
     return web.ok(
-        added=len(made),
-        ids=[str(r.get("id")) for r in made],   # 页面靠它做「撤销本次批量订阅」
-        skipped=skipped,
-        message=(
-            f"已订阅 {len(made)} 部番剧到「{str(body.get('target_name') or target_id)}」"
-            f"（跳过 {skipped} 部重复）"
-        ),
+        added=res["added"],
+        ids=res["ids"],          # 页面靠它做「撤销本次批量订阅」
+        skipped=res["skipped"],
+        message=res["message"],
     )
 
 
@@ -328,16 +271,143 @@ async def api_rule_preview():
     return web.ok(text=text)
 
 
+# ---------------- 群订阅（「订阅数据」页） ----------------
+#
+# 一行 = 一个群（「订阅番剧」命令登记下来的，面板也能手工补）。
+# 「这个群订了哪几部番」是 store 里的规则，按 platform_id + target_id 归到一起 ——
+# 逐部番的新增 / 删除直接复用 /rule/save 与 /rule/delete，不另开接口。
+
+
+def _with_anime_counts(subs: list[dict], rules: list[dict]) -> list[dict]:
+    """给每条群订阅补上「订了几部番 / 几部启用」（一次 O(n²) 的比对，群数量级很小）。"""
+    out: list[dict] = []
+    for s in subs:
+        pid, gid = s["platform_id"], s["group_id"]
+        mine = [
+            r for r in rules
+            if str(r.get("platform_id") or "") == pid and str(r.get("target_id") or "") == gid
+        ]
+        out.append({
+            **s,
+            "anime_total": len(mine),
+            "anime_enabled": sum(1 for r in mine if r.get("enabled")),
+        })
+    return out
+
+
+async def api_subs():
+    """「订阅数据」页：群订阅列表 + 权限档位 + 概览计数。"""
+    rules = store.load_rules()
+    subs = _with_anime_counts(group_subs.load_subs(), rules)
+    subs.sort(key=lambda s: (not s.get("enabled", True), s.get("group_name") or s["group_id"]))
+    return web.ok(
+        subs=subs,
+        settings=store.load_settings(),
+        counts={
+            "groups": len(subs),
+            "online": sum(1 for s in subs if s.get("enabled", True)),
+            "offline": sum(1 for s in subs if not s.get("enabled", True)),
+            "anime": sum(s["anime_total"] for s in subs),
+        },
+    )
+
+
+async def api_subs_toggle():
+    """启用 / 停用某个群的番剧推送。
+
+    ★ 启用时**要把该群的规则重排一次**：停用期间规则不会被跑，`next_run_at`
+      全积压在过去 —— 不重排的话一解禁就一次性炸出几十条消息。
+    """
+    body = await web.body()
+    pid = str(body.get("platform_id") or "").strip()
+    gid = str(body.get("group_id") or "").strip()
+    if not gid:
+        return web.fail("缺少群 ID")
+    enabled = bool(body.get("enabled"))
+    sub = group_subs.set_enabled(pid, gid, enabled)
+    if sub is None:
+        return web.fail("这条群订阅不存在（可能已被删除）")
+    fresh = schedule.reschedule_group(store, pid, gid) if enabled else 0
+    message = "已启用：该群会继续收到番剧更新" if enabled else "已停用：该群不再收到任何番剧更新"
+    if enabled and fresh:
+        message += f"（{fresh} 条订阅已重排到下一次播出）"
+    return web.ok(sub=sub, rescheduled=fresh, message=message)
+
+
+async def api_subs_delete():
+    """删除一条群订阅。
+
+    ★ 口径（用户明确要求）：**连同该群的全部番剧订阅一起删** ——
+      只删「群记录」而把几十条规则留着，页面上一片干净、后台却还在推，最容易误判。
+    """
+    body = await web.body()
+    pid = str(body.get("platform_id") or "").strip()
+    gid = str(body.get("group_id") or "").strip()
+    if not gid:
+        return web.fail("缺少群 ID")
+    ids = [
+        str(r.get("id")) for r in store.load_rules()
+        if str(r.get("platform_id") or "") == pid and str(r.get("target_id") or "") == gid
+    ]
+    removed = store.delete_rules(ids)
+    existed = group_subs.delete_sub(pid, gid)
+    if not existed and not removed:
+        return web.fail("这条群订阅不存在（可能已被删除）")
+    return web.ok(removed=removed, message=f"已删除该群订阅，并清掉它的 {removed} 条番剧订阅")
+
+
+async def api_subs_save():
+    """面板上手工新增 / 编辑一条群订阅（群名、订阅者名可以补填或改）。
+
+    ★ 为什么需要它：QQ 官方机器人拿不到**群名**，命令登记下来的记录群名是空的；
+      另外完全不用命令、只想在面板上加一个群时也得有入口。
+    """
+    body = await web.body()
+    pid = str(body.get("platform_id") or "").strip()
+    gid = str(body.get("group_id") or "").strip()
+    if not pid:
+        return web.fail("请选择平台实例")
+    if not gid:
+        return web.fail("请填写群 ID（群消息事件里的 session_id，OneBot 就是 QQ 群号）")
+
+    group_name = str(body.get("group_name") or "").strip()
+    subscriber_name = str(body.get("subscriber_name") or "").strip()
+    if group_subs.get_sub(pid, gid) is not None:
+        sub = group_subs.update_sub(pid, gid, group_name=group_name, subscriber_name=subscriber_name)
+        return web.ok(sub=sub, message="已保存群订阅")
+    sub = group_subs.upsert(
+        pid, gid,
+        group_name=group_name,
+        subscriber_id=str(body.get("subscriber_id") or "").strip(),
+        subscriber_name=subscriber_name,
+    )
+    return web.ok(sub=sub, message="已新增群订阅（还没订番剧，可点「番剧」里的「一键订本季全部」）")
+
+
+async def api_subs_anime_all():
+    """把放送表里本季的番剧**全部**订给这个群（「订阅数据」页里的补订按钮）。
+
+    命令已经自动做过这一步；这里是给「当时放送表还没拉过 / 想在面板上补」的场合。
+    ★ 只读缓存（同批量订阅的口径），不发起外部请求。
+    """
+    body = await web.body()
+    pid = str(body.get("platform_id") or "").strip()
+    gid = str(body.get("target_id") or body.get("group_id") or "").strip()
+    sub = group_subs.get_sub(pid, gid)
+    if sub is None:
+        return web.fail("这条群订阅不存在（可能已被删除）")
+    res = await bulk.subscribe_season(
+        pid, gid,
+        platform_name=pid,
+        target_name=sub.get("group_name") or gid,
+        allow_fetch=False,
+    )
+    if not res.get("ok"):
+        return web.soft_fail(res.get("message") or "订阅失败")
+    return web.ok(added=res["added"], skipped=res["skipped"], ids=res["ids"], message=res["message"])
+
+
 # ---------------- 工具 ----------------
-
-
-def _wd(value) -> int:
-    """周几归一到 1..7。"""
-    try:
-        wd = int(str(value).strip())
-    except (TypeError, ValueError):
-        return 1
-    return wd if 1 <= wd <= 7 else 1
 
 
 def _next_at(rule: dict) -> int:
@@ -346,7 +416,7 @@ def _next_at(rule: dict) -> int:
 
 ROUTES = [
     ("/state", api_state, ["GET"], "模块概览（星期表 / 数据源 / 订阅数 / 推送状态）"),
-    ("/settings", api_settings, ["GET"], "读取模块设置（数据源 + 总开关）"),
+    ("/settings", api_settings, ["GET"], "读取模块设置（数据源 + 总开关 + 命令权限）"),
     ("/settings", api_settings_save, ["POST"], "保存模块设置"),
     ("/calendar", api_calendar, ["GET"], "每日放送（周一~周日分组）"),
     ("/search", api_search, ["GET"], "按名字搜番剧"),
@@ -360,4 +430,10 @@ ROUTES = [
     ("/rule/batch", api_rule_batch, ["POST"], "批量启停 / 批量删除"),
     ("/rule/run", api_rule_run, ["POST"], "立即推送一次"),
     ("/rule/preview", api_rule_preview, ["GET"], "预览推送内容"),
+    # 「订阅数据」页（群订阅：群 ID / 群名 / 订阅者 / 启停 / 删除）
+    ("/subs", api_subs, ["GET"], "群订阅列表（订阅数据页）"),
+    ("/subs/save", api_subs_save, ["POST"], "新增 / 编辑群订阅"),
+    ("/subs/toggle", api_subs_toggle, ["POST"], "启用 / 停用某个群的番剧推送"),
+    ("/subs/delete", api_subs_delete, ["POST"], "删除群订阅（连它的番剧订阅一起删）"),
+    ("/subs/anime/all", api_subs_anime_all, ["POST"], "把本季放送表里的番剧全部订给这个群"),
 ]

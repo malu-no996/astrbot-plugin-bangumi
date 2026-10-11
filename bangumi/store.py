@@ -93,6 +93,8 @@ _RULE_DEFAULTS: dict = {
 _SETTINGS_DEFAULTS: dict = {
     "provider": DEFAULT_PROVIDER,   # 数据源
     "enabled": True,                # 模块总开关（关掉后后台推送循环空转，不查数据不发消息）
+    # 「订阅番剧」命令的权限档位：False = 群主 + 群管理员（默认）；True = 仅群主
+    "owner_only": False,
 }
 
 _lock = threading.RLock()
@@ -324,19 +326,24 @@ def load_settings() -> dict:
         data = {}
     prov = str(data.get("provider") or "").strip().lower()[:20]
     enabled = data.get("enabled")
+    owner_only = data.get("owner_only")
     return {
         "provider": prov if prov in PROVIDERS else DEFAULT_PROVIDER,
         "enabled": True if enabled is None else bool(enabled),
+        "owner_only": False if owner_only is None else bool(owner_only),
     }
 
 
 def save_settings(**fields) -> dict:
+    """只写**明确传进来的**字段（没传的保持原值）。"""
     cur = load_settings()
     if "provider" in fields:
         prov = str(fields["provider"] or "").strip().lower()[:20]
         cur["provider"] = prov if prov in PROVIDERS else DEFAULT_PROVIDER
     if "enabled" in fields:
         cur["enabled"] = bool(fields["enabled"])
+    if "owner_only" in fields:
+        cur["owner_only"] = bool(fields["owner_only"])
     with _lock:
         _atomic_write(SETTINGS_FILE, cur)
     return cur

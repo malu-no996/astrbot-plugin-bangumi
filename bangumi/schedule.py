@@ -14,6 +14,8 @@ from __future__ import annotations
 import time
 from datetime import date, datetime
 
+from . import group_subs
+
 
 def today(now: float | None = None) -> date:
     return datetime.fromtimestamp(now if now is not None else time.time()).date()
@@ -65,11 +67,21 @@ def week_episode(air_date: str, day: date, interval: int = 7) -> int:
 
 
 def due_rules(store, now: float | None = None) -> list[dict]:
-    """到点的规则（没排期的顺手补排）。"""
+    """到点的规则（没排期的顺手补排）。
+
+    ★ **被停用的群在这里就滤掉**（`group_subs.muted_pairs`）：不是等发送时再拦 ——
+      不然那些规则会一直「到点」、每 30 秒原地重跑一遍，日志和退避计数全被污染。
+      「没有群订阅记录」的目标不在停用集合里，照常推送（面板老订阅的行为不变）。
+    """
     now = now if now is not None else time.time()
+    muted = group_subs.muted_pairs()
     out: list[dict] = []
     for r in store.load_rules():
         if not r.get("enabled"):
+            continue
+        if str(r.get("target_type")) == "group" and (
+            str(r.get("platform_id") or ""), str(r.get("target_id") or "")
+        ) in muted:
             continue
         nxt = int(r.get("next_run_at") or 0)
         if not nxt:
@@ -78,6 +90,27 @@ def due_rules(store, now: float | None = None) -> list[dict]:
         if now >= nxt:
             out.append(r)
     return out
+
+
+def reschedule_group(store, platform_id: str, target_id: str, now: float | None = None) -> int:
+    """把某个群的全部规则重排一次（**只写一次盘**），返回重排的条数。
+
+    ★ 用在「群订阅重新启用」上：停用期间规则不会被跑，`next_run_at` 全部积压在
+      过去 —— 一解禁就会**一次性炸出几十条**消息（本季番剧数量级）。所以启用
+      的时候统一按「错过的排到下一次」重算，和「创建时错过了不补推」同一口径。
+    """
+    now = now if now is not None else time.time()
+    pid, tid = str(platform_id or ""), str(target_id or "")
+    rules = store.load_rules()
+    hit = 0
+    for r in rules:
+        if (str(r.get("platform_id") or "") == pid
+                and str(r.get("target_id") or "") == tid):
+            r["next_run_at"] = compute_next(r, now)
+            hit += 1
+    if hit:
+        store.save_rules(rules)
+    return hit
 
 
 def next_fire(store) -> tuple[int, str]:
