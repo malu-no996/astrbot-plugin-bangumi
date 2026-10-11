@@ -1,4 +1,4 @@
-"""横屏卡片：左边封面海报，右边中文名 / 原名 / 放送时间。
+"""横屏卡片：左边封面海报，右边中文名 / 原名 / 放送时间 / 第 N 集更新了。
 
 为什么要有它
 ------------
@@ -10,8 +10,12 @@
     │  │        │   《中文名》  ← 大号加粗，最多 3 行        │
     │  │  封面  │   原名：…     ← 次要色，最多 2 行          │
     │  │  2:3   │   放送：周三 23:00  ← 强调色               │
-    │  └────────┘                                          │
+    │  └────────┘   第 N 集更新了   ← 强调色、加粗（图内强调） │
     └──────────────────────────────────────────────────────┘
+
+「第 N 集更新了」正文里已经有一句，卡片上再强调一次 —— 用户要求图里也能一眼看到是第几集。
+文字正文（render.py 默认排版）只留「【新番更新】作品名 / 第 N 集更新了」，原名、放送
+只在卡片里出现，不在文字里重复。
 
 背景 = 封面缩到极小再拉伸 + 高斯模糊 + 压暗 —— 与封面同色系的渐变底，再统一压暗到
 固定程度，这样白字的对比度**不受封面明暗影响**（亮海报也不会把字吃掉）。
@@ -68,6 +72,10 @@ NATIVE_COLOR = (176, 184, 203)
 ACCENT_FALLBACK = (255, 138, 170)     # 封面取不出明显颜色时用的强调色（番剧粉）
 BG_BASE = (13, 14, 22)
 BG_DARKEN = 0.80              # 背景压暗程度（越大越暗，白字越稳）
+
+EP_SIZE = 34                  # 「第 N 集更新了」字号（比标题小、比次要信息大）
+EP_LEAD = 52                  # 强调行行距
+EP_GAP = 22                   # 放送 → 第 N 集更新了 的间距
 
 JPEG_QUALITY = 90
 KEEP_FILES = 400              # 卡片缓存上限，超了按修改时间删最旧的
@@ -264,7 +272,7 @@ def _accent(art) -> tuple[int, int, int]:
     return (round(r * 255), round(g * 255), round(b * 255))
 
 
-def _render(src: Path, title: str, native: str, when: str) -> bytes | None:
+def _render(src: Path, title: str, native: str, when: str, ep=None) -> bytes | None:
     """拼一张卡片，返回 JPEG 字节；任何一步不行都返回 None（调用方退回原封面）。
 
     Pillow 是同步的，调用方用 `asyncio.to_thread` 跑，别卡住事件循环。
@@ -324,12 +332,18 @@ def _render(src: Path, title: str, native: str, when: str) -> bytes | None:
         else _wrap(f"原名：{native}", META_SIZE, False, max_w, META_LINES)
     )
     when_lines = _wrap(f"放送：{when}", META_SIZE, False, max_w, 1)
+    ep_lines = (
+        [] if not ep
+        else _wrap(f"第 {ep} 集更新了", EP_SIZE, True, max_w, 1)
+    )
 
     block = BAR_H + BAR_GAP + len(title_lines) * TITLE_LEAD
     if native_lines:
         block += BLOCK_GAP + len(native_lines) * META_LEAD
     if when_lines:
         block += LINE_GAP + len(when_lines) * META_LEAD
+    if ep_lines:
+        block += EP_GAP + len(ep_lines) * EP_LEAD
     y = box[1] + max(0, (ph - block) // 2)          # 整块在封面高度里垂直居中
 
     draw.rounded_rectangle((x, y, x + BAR_W, y + BAR_H), radius=BAR_H // 2, fill=accent + (255,))
@@ -345,6 +359,12 @@ def _render(src: Path, title: str, native: str, when: str) -> bytes | None:
     if when_lines:
         y += LINE_GAP
         _draw(draw, x, y, when_lines[0], META_SIZE, False, accent + (255,))
+        y += META_LEAD          # ★ 以前「放送」是最后一行，画完不用挪 y；现在下面还有集数行
+    if ep_lines:
+        y += EP_GAP
+        for line in ep_lines:
+            _draw(draw, x, y, line, EP_SIZE, True, accent + (255,))
+            y += EP_LEAD
 
     out = Image.alpha_composite(canvas, layer).convert("RGB")
     buf = BytesIO()
@@ -368,8 +388,8 @@ def fields_of(rule: dict) -> tuple[str, str, str]:
     return title, native, when
 
 
-def _key(url: str, title: str, native: str, when: str, level: int) -> str:
-    raw = json.dumps([url, title, native, when, int(level)], ensure_ascii=False)
+def _key(url: str, title: str, native: str, when: str, level: int, ep) -> str:
+    raw = json.dumps([url, title, native, when, int(level), ep], ensure_ascii=False)
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
@@ -383,12 +403,14 @@ def _sweep() -> None:
         pass
 
 
-async def build(rule: dict, *, level: int = 0) -> Path | None:
+async def build(rule: dict, *, level: int = 0, ep=None) -> Path | None:
     """生成（或取用缓存）这条订阅的横屏卡片，返回本地图片路径；生成不了返回 None。
 
     - `level=0` 用封面原图；
     - `level>0` 先用 `cover.sanitize` 把封面打成第 N 级马赛克再拼进去 ——
       官方 QQ 判定「内容违规」时，逐级升级的是**拼卡片之前的那张封面**。
+    - `ep` = 今天更新的集数（整数）。非 None 时会在卡片右侧补一行「第 N 集更新了」；
+      同一部番每集内容不同 → 缓存键含 ep，每集会重画（不影响其它缓存）。
 
     没有封面（`rule.image` 为空）直接返回 None：卡片的主体就是那张海报，没图不值得拼。
     """
@@ -397,14 +419,14 @@ async def build(rule: dict, *, level: int = 0) -> Path | None:
         return None
     title, native, when = fields_of(rule)
     level = max(0, min(int(level or 0), cover.MAX_LEVEL))
-    dst = CARD_DIR / f"{_key(url, title, native, when, level)}.jpg"
+    dst = CARD_DIR / f"{_key(url, title, native, when, level, ep)}.jpg"
     if dst.exists():
         return dst                                  # 内容键相同 → 直接用缓存
 
     src = await (cover.ensure_src(url) if level == 0 else cover.sanitize(url, level))
     if src is None:
         return None
-    raw = await asyncio.to_thread(_render, src, title, native, when)
+    raw = await asyncio.to_thread(_render, src, title, native, when, ep)
     if not raw:
         return None
     try:

@@ -146,7 +146,7 @@ async def run_rule(rule_id: str, source: str = "auto") -> dict:
         return {"ok": False, "message": msg}
 
     try:
-        await sender.send(rule, text)
+        await sender.send(rule, text, ep=ep)
     except Exception as exc:
         msg = f"发送失败：{exc}"
         _defer(rule, msg, now)

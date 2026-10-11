@@ -4,7 +4,7 @@
 （platform_id 是 WebUI「消息平台」里的实例 ID；group_id 是该平台群消息事件里的
 session_id，如 aiocqhttp 的 QQ 群号）。
 
-**发出去的图**是 `card.py` 拼的**横屏卡片**（左封面 + 右中文名/原名/放送时间），
+**发出去的图**是 `card.py` 拼的**横屏卡片**（左封面 + 右中文名/原名/放送时间/第 N 集更新了），
 不是封面原图；卡片拼不出来才退回原封面。
 
 **按平台类型分发**：
@@ -89,8 +89,11 @@ async def _post(session: str, comps, markdown: bool) -> None:
         )
 
 
-async def send(rule: dict, text: str) -> None:
-    """按订阅配置把一条推送发出去。失败抛异常（调用方退避重试）。"""
+async def send(rule: dict, text: str, ep=None) -> None:
+    """按订阅配置把一条推送发出去。失败抛异常（调用方退避重试）。
+
+    `ep` = 今天更新的集数，透传给卡片：卡片右侧会多一行「第 N 集更新了」。
+    """
     from astrbot.api.message_components import Image, Plain
 
     platform_id = str(rule.get("platform_id") or "").strip()
@@ -105,13 +108,13 @@ async def send(rule: dict, text: str) -> None:
     img = str(rule.get("image") or "").strip()
     ptype = platform_type(platform_id)
     if ptype.startswith("qq_official"):
-        await _send_official(session, rule, text, img)
+        await _send_official(session, rule, text, img, ep=ep)
         return
 
     # 其他平台：正文 + 横屏卡片（卡片拼不出来就退回封面图，别把这条推送搞没）
     body = render.fill_image(text, "")
     comps = [Plain(body)]
-    pic = await _safe_card(rule)
+    pic = await _safe_card(rule, ep=ep)
     if pic is not None:
         try:
             comps.append(Image.fromFileSystem(str(pic)))
@@ -131,16 +134,16 @@ async def send(rule: dict, text: str) -> None:
     await _post(session, comps, markdown=False)
 
 
-async def _safe_card(rule: dict, *, level: int = 0):
+async def _safe_card(rule: dict, *, level: int = 0, ep=None):
     """拼横屏卡片，失败只记日志、不抛 —— 图绝不能把整条推送算失败。"""
     try:
-        return await card.build(rule, level=level)
+        return await card.build(rule, level=level, ep=ep)
     except Exception as exc:       # noqa: BLE001
         logger.warning(f"番剧推送：卡片生成失败（{type(exc).__name__}: {exc}），退回封面图")
         return None
 
 
-async def _send_official(session: str, rule: dict, text: str, img: str) -> None:
+async def _send_official(session: str, rule: dict, text: str, img: str, *, ep=None) -> None:
     """QQ 官方机器人：**一条**消息里同时有正文和横屏卡片。
 
     先试横屏卡片（`Plain(正文) + 本地卡片图`，适配器内部转成 `msg_type=7` 的
@@ -168,7 +171,7 @@ async def _send_official(session: str, rule: dict, text: str, img: str) -> None:
     ]
     built = False
     for lv in ladder:
-        path = await _safe_card(rule, level=lv)
+        path = await _safe_card(rule, level=lv, ep=ep)
         if path is None:
             continue
         built = True

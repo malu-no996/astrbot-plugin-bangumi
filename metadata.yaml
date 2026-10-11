@@ -1,6 +1,6 @@
 name: astrbot_plugin_bangumi
 display_name: 番剧推送
-desc: 番剧订阅推送 —— 每日放送浏览、群内「订阅番剧」命令一键订本季、横屏卡片推送（左封面 + 右中文名/原名/放送时间）
-version: v1.2.0
+desc: 番剧订阅推送 —— 每日放送浏览、群内「订阅番剧」命令一键订本季、横屏卡片推送（左封面 + 右中文名/原名/放送时间/第 N 集更新了）
+version: v1.2.1
 author: malu
 repo: https://github.com/malu-no996/astrbot-plugin-bangumi

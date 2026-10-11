@@ -1,15 +1,14 @@
 """正文渲染：默认排版 / 自定义模板 / 封面占位行 / 官方 markdown 转换。
 
-正文里 `IMAGE_MARK` 是「封面图该插在哪」的占位行：默认排版把它放在模板那几行之后、
-「原名 / 放送」之前 —— 即用户指定的顺序：
+正文里 `IMAGE_MARK` 是「封面图该插在哪」的占位行：默认排版把它放在模板那几行之后 ——
+即用户指定的顺序：
 
     第 N 集更新了
     封面图
-    原名：…
-    放送：…
 
-发送端把它换成真图（OneBot 的 Image 组件 / 官方 markdown 的 `![](…)`），
-没有封面就把整行删掉。用 NUL 包起来，用户在模板里打不出这个串。
+「原名 / 放送」不写进正文（避免和卡片右侧重复），它们由卡片在图里展示。
+发送端把占位行换成真图（OneBot 的 Image 组件 / 官方富媒体的本地卡片），没有封面就删掉。
+用 NUL 包起来，用户在模板里打不出这个串。
 """
 from __future__ import annotations
 
@@ -50,9 +49,7 @@ def render_message(rule: dict, ep: int, day) -> str:
             logger.warning(f"番剧：自定义模板渲染失败（{exc}），回落默认排版")
     lines = DEFAULT_TEMPLATE.format(**ctx).split("\n")
     lines.append(IMAGE_MARK)          # 封面图就位（发送端替换；没封面就把这行删掉）
-    if native and native != title:
-        lines.append(f"原名：{native}")
-    lines.append(f"放送：{ctx['weekday']} {ctx['time']}")
+    # 原名 / 放送不再写进正文 —— 它们已经画在卡片右侧，正文只留「作品名 + 第 N 集更新了」
     return "\n".join(lines)
 
 
