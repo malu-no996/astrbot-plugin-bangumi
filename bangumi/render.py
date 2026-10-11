@@ -16,7 +16,7 @@ from loguru import logger
 
 from . import store
 
-DEFAULT_TEMPLATE = "【新番更新】\n《{title}》\n第 {ep} 集更新了"
+DEFAULT_TEMPLATE = "【新番更新】{title}\n第 {ep} 集更新了"
 TEMPLATE_PLACEHOLDERS = ("{title}", "{native}", "{ep}", "{total}", "{weekday}", "{time}", "{date}", "{url}")
 
 IMAGE_MARK = "\x00image\x00"
