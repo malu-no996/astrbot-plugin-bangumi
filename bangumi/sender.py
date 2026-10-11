@@ -8,11 +8,11 @@ session_id，如 aiocqhttp 的 QQ 群号）。
 不是封面原图；卡片拼不出来才退回原封面。
 
 **按平台类型分发**：
-- `qq_official`（QQ 官方机器人）→ 一律走**富媒体**（`Plain(正文) + 本地卡片图`，
-  适配器内部转 `msg_type=7`，即「正文 + 图片一条消息」）。官方 markdown 的图**必须
-  是公网 URL**，本地拼的卡片塞不进去，所以这条通道只认富媒体。封面被判「内容违规」
-  时逐级打马赛克再拼卡片重发；卡片完全拼不出来才退回原来的封面通道
-  （markdown 公网外链 → 马赛克封面 → 纯文字，见 `_send_official_cover`）。
+- `qq_official`（QQ 官方机器人）→ 按 **AstrBot 官方文档的 MessageChain 写法**发
+  `Comp.Plain(正文) + Comp.Image.fromFileSystem(卡片)` 一条消息，**不设置**
+  `use_markdown_`（保持文档默认行为，由平台配置 `use_markdown` 决定）。
+  封面被判「内容违规」时逐级打马赛克再拼卡片重发；卡片完全拼不出来才退回
+  原来的封面通道（markdown 公网外链 → 马赛克封面 → 纯文字，见 `_send_official_cover`）。
 - 其他平台（aiocqhttp 等）→ 发「正文 + 卡片图」普通消息链，显式 `use_markdown_=False`。
 
 main.py 在插件初始化时调 bind(context)；push 只 import 本模块。
@@ -68,15 +68,22 @@ def platform_type(platform_id: str) -> str:
     return ""
 
 
-def _chain(comps, markdown: bool):
+def _chain(comps, markdown):
+    """组一条 MessageChain。
+
+    `markdown=True/False` 显式设置 `use_markdown_`；传 `None` 则**不碰**这个标记，
+    交给平台配置的 `use_markdown` 默认值决定 —— 这是 AstrBot 官方文档里
+    MessageChain 的默认行为（文档示例从不设置这个标记）。
+    """
     from astrbot.api.event import MessageChain
 
     chain = MessageChain(chain=comps)
-    chain.use_markdown_ = bool(markdown)
+    if markdown is not None:
+        chain.use_markdown_ = bool(markdown)
     return chain
 
 
-async def _post(session: str, comps, markdown: bool) -> None:
+async def _post(session: str, comps, markdown=None) -> None:
     """发一条消息；找不到平台 / 发送失败抛异常，由调用方记入结果。"""
     if _context is None:
         raise RuntimeError("插件尚未初始化完成，无法发送消息")
@@ -144,10 +151,17 @@ async def _safe_card(rule: dict, *, level: int = 0, ep=None):
 
 
 async def _send_official(session: str, rule: dict, text: str, img: str, *, ep=None) -> None:
-    """QQ 官方机器人：**一条**消息里同时有正文和横屏卡片。
+    """QQ 官方机器人：**按 AstrBot 官方文档的 MessageChain 写法**，一条消息发「文字 + 横屏卡片」。
 
-    先试横屏卡片（`Plain(正文) + 本地卡片图`，适配器内部转成 `msg_type=7` 的
-    「正文 + 富媒体一条消息」，不需要公网、不需要图床）。
+    文档写法（ astrbot.api.message_components as Comp ）::
+
+        chain = [
+            Comp.Plain("..."),                       # 文字在前
+            Comp.Image.fromFileSystem("..."),        # 图片在后
+        ]
+
+    ★ 与之前实现的唯一差别：**不强制 `use_markdown_=False`**，让 MessageChain 保持
+      文档默认行为（`use_markdown_` 不设置，由平台配置 `use_markdown` 决定）。
 
     封面被判「内容违规」时走**马赛克阶梯**：逐级把封面打糊、重新拼卡片再发。
     级别落盘缓存（`cover.sanitize`），下次直接从那一级起试。被拒的消息不会出现在
@@ -161,7 +175,7 @@ async def _send_official(session: str, rule: dict, text: str, img: str, *, ep=No
     ★ 拼图失败不抛：没图 / URL 空就照发纯文字。图绝不能把整条推送算失败，
       否则会触发退避重试、把文字重复发一遍。
     """
-    from astrbot.api.message_components import Image, Plain
+    import astrbot.api.message_components as Comp
 
     body = render.fill_image(text, "")              # 不带图的正文（降级那条消息用它）
     base = cover.level_of(img) if img else 0         # >0 = 这张封面已经打过马赛克
@@ -176,7 +190,12 @@ async def _send_official(session: str, rule: dict, text: str, img: str, *, ep=No
             continue
         built = True
         try:
-            await _post(session, [Plain(body), Image.fromFileSystem(str(path))], markdown=False)
+            # ★ 文档写法：Plain 在前、Image 在后，一条 MessageChain
+            chain = [
+                Comp.Plain(body),
+                Comp.Image.fromFileSystem(str(path)),
+            ]
+            await _post(session, chain)
             if lv > 0:
                 logger.info(f"番剧推送：用 {lv} 级马赛克封面拼的卡片发送成功（已缓存，下次直接用）")
             return
