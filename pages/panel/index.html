@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>番剧面板</title>
+    <link rel="stylesheet" href="./style.css" />
+    <!-- bridge 必须先于所有业务脚本加载（经典脚本立即执行，不能等服务端在 </body> 前追加）；
+         服务端会把这行改写成带鉴权参数的真实地址 -->
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="top">
+        <h1>番剧推送 <span class="hint">每日放送 · 新番更新定时推送到群</span></h1>
+        <label class="check" title="关掉后后台推送循环空转（不查数据、不发消息），订阅与缓存保留">
+          <input type="checkbox" data-model="settings.enabled" data-after="saveModule">
+          <span id="mod-badge" class="badge">读取中…</span>
+        </label>
+      </header>
+      <nav class="tabs" id="tabs"></nav>
+      <main id="view"></main>
+      <div id="modal"></div>
+      <div id="toasts"></div>
+    </div>
+    <!-- 按序加载：core（公共）→ 各子页签 → 入口 -->
+    <script src="./js/core.js"></script>
+    <script src="./js/calendar.js"></script>
+    <script src="./js/subs.js"></script>
+    <script src="./js/main.js"></script>
+  </body>
+</html>
