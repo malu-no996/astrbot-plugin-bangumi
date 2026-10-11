@@ -178,6 +178,32 @@ def _mosaic(data: bytes, level: int) -> bytes | None:
 # ---------------- 对外：把某张封面缓存成「第 N 级马赛克版」 ----------------
 
 
+async def ensure_src(url: str) -> Path | None:
+    """确保封面**原图**已落到本地缓存（`<md5>.src`），返回它的路径（失败 None）。
+
+    与 `sanitize` 的区别是**不打马赛克** —— 横屏卡片要在原图上裁切排版
+    （见 card.py），只有被官方审核拦下时才需要马赛克版。原图只下一次。
+    """
+    url = str(url or "").strip()
+    if not url:
+        return None
+    src = _src_file(_md5(url))
+    if src.exists():
+        return src
+    data = await _download(url)
+    if not data:
+        return None
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = src.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, src)
+    except OSError as exc:
+        logger.warning(f"番剧封面：原图落盘失败：{exc}")
+        return None
+    return src
+
+
 async def sanitize(url: str, level: int) -> Path | None:
     """确保「这张封面 + 这一级马赛克」的本地文件存在，返回它的路径（失败 None）。
 
@@ -193,18 +219,9 @@ async def sanitize(url: str, level: int) -> Path | None:
     if dst.exists() and level_of(url) == level:
         return dst                                   # 已经就是这个级别，直接用
 
-    src = _src_file(name)
-    if not src.exists():
-        data = await _download(url)
-        if not data:
-            return None
-        try:
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = src.with_suffix(".tmp")
-            tmp.write_bytes(data)
-            os.replace(tmp, src)
-        except OSError as exc:
-            logger.warning(f"番剧封面：原图落盘失败：{exc}")
+    src = await ensure_src(url)
+    if src is None:
+        return None
 
     try:
         raw = src.read_bytes()
