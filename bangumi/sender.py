@@ -190,10 +190,10 @@ async def _send_official(session: str, rule: dict, text: str, img: str, *, ep=No
             continue
         built = True
         try:
-            # ★ 文档写法：Plain 在前、Image 在后，一条 MessageChain
+            # 调试：Image 在前、Plain 在后，看 QQ 客户端渲染顺序有无变化
             chain = [
-                Comp.Plain(body),
                 Comp.Image.fromFileSystem(str(path)),
+                Comp.Plain(body),
             ]
             await _post(session, chain)
             if lv > 0:
